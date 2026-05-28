@@ -142,8 +142,8 @@
                 
                 <!-- Action Area -->
                 <div id="customer-action-area">
-                    <button id="get-token-btn" onclick="generateToken()" disabled class="w-full bg-indigo-300 text-white text-xl font-bold py-6 rounded-2xl transition-all flex items-center justify-center gap-3 cursor-not-allowed">
-                        <i class="ph ph-spinner animate-spin text-3xl"></i> Loading...
+                    <button onclick="generateToken()" class="w-full bg-indigo-600 text-white text-xl font-bold py-6 rounded-2xl hover:bg-indigo-700 hover:shadow-lg hover:-translate-y-1 transition-all flex items-center justify-center gap-3">
+                        <i class="ph ph-ticket text-3xl"></i> Get Token
                     </button>
                 </div>
             </div>
@@ -251,12 +251,12 @@
         // =========================================================
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 
-        const SUPABASE_URL  = 'YOUR_SUPABASE_URL';         // e.g. https://xxxx.supabase.co
-        const SUPABASE_ANON = 'YOUR_SUPABASE_ANON_KEY';    // safe to expose in browser
+        const SUPABASE_URL  = 'https://nmhgacobkhlhbotsjzzj.supabase.co';         // e.g. https://xxxx.supabase.co
+        const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5taGdhY29ia2hsaGJvdHNqenpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5MjY4OTQsImV4cCI6MjA5NTUwMjg5NH0.KBAXXQbQG32MMf64WJ-Kh5MfzQ0I4Ce4U9LnPUU8JqU';    // safe to expose in browser
 
         // VAPID public key — generate once with: npx web-push generate-vapid-keys
         // Then paste the PUBLIC key here.
-        const VAPID_PUBLIC_KEY = 'YOUR_VAPID_PUBLIC_KEY';
+        const VAPID_PUBLIC_KEY = 'BDhYUfh3f7BH8sWccVdW-W28BYlT6P-9FGmNopulDO2BahEIpZnJ1iW-uTPEF2yLGQc6YpHyFPAecLISo95egrY';
 
         // =========================================================
         // Supabase Edge Function URL that sends Web Push payloads.
@@ -366,13 +366,6 @@
             sessionTokenCount = appState.tokens.reduce(
                 (max, t) => (t.userNumber > max ? t.userNumber : max), 0
             );
-            // Enable Get Token button once real state is loaded
-            const btn = document.getElementById('get-token-btn');
-            if (btn) {
-                btn.disabled = false;
-                btn.className = 'w-full bg-indigo-600 text-white text-xl font-bold py-6 rounded-2xl hover:bg-indigo-700 hover:shadow-lg hover:-translate-y-1 transition-all flex items-center justify-center gap-3';
-                btn.innerHTML = '<i class="ph ph-ticket text-3xl"></i> Get Token';
-            }
         }
 
         async function saveState() {
@@ -483,14 +476,14 @@
         window.generateToken = async function() {
             const tokenId = `T-${appState.nextNumber}`;
             appState.nextNumber++;
-            sessionTokenCount++;  // sessionTokenCount is already synced from global state
+            sessionTokenCount++;
             appState.updateCounter = (appState.updateCounter || 0) + 1;
 
             appState.tokens.push({
                 id: tokenId,
                 status: 'pending',
                 timestamp: Date.now(),
-                userNumber: sessionTokenCount  // now globally consistent
+                userNumber: sessionTokenCount
             });
 
             const pending = appState.tokens
