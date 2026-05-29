@@ -1,7 +1,7 @@
 // sw.js — QueueMaster Service Worker
 // Pure Web Push API (no Firebase). Place at ROOT of your site.
 
-const CACHE_NAME = 'queuemaster-v1';
+const CACHE_NAME = 'queuemaster-v2';
 
 self.addEventListener('install', (event) => {
     self.skipWaiting();
@@ -17,26 +17,48 @@ self.addEventListener('push', (event) => {
     try {
         data = event.data ? event.data.json() : {};
     } catch (e) {
-        data = { title: 'QueueMaster', body: event.data ? event.data.text() : 'Your queue position has updated.' };
+        data = {
+            title: 'QueueMaster',
+            body: event.data ? event.data.text() : 'Your queue position has updated.',
+            type: 'generic'
+        };
     }
 
-    const title = data.title || 'QueueMaster';
+    const type = data.type || 'generic';
+
+    // ── Pick icon/badge/vibrate based on notification type ──────────────────
+    const isYourTurn = type === 'immediate_call' || type === 'called';
+    const isWarning  = type === 'warning';
+    const isCanceled = type === 'canceled';
+
     const options = {
         body: data.body || 'Your queue position has updated.',
         icon: '/icon.png',
         badge: '/icon.png',
-        vibrate: [200, 100, 200],
+        // Distinct vibration sequences
+        vibrate: isYourTurn ? [300, 100, 300, 100, 300] : 
+                 isWarning  ? [500, 200, 500] : 
+                 isCanceled ? [100, 50, 100] : [200, 100, 200],
         data: data.data || {},
-        requireInteraction: false,
-        tag: 'queuemaster-notification' // Replaces previous notification instead of stacking
+        // Keep "your turn" and "warning" visible until the user taps them
+        requireInteraction: isYourTurn || isWarning, 
+        // Group notifications by type so they don't spam a dozen separate messages
+        tag: isYourTurn ? 'qm-turn' : 
+             isWarning  ? 'qm-warn' : 
+             isCanceled ? 'qm-cancel' : 'qm-queued',
+        renotify: true
     };
+
+    const title = data.title || 'QueueMaster';
 
     event.waitUntil(
         self.registration.showNotification(title, options).then(() => {
-            // Notify any open windows to play a sound
             return self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
         }).then(clients => {
-            clients.forEach(client => client.postMessage({ type: 'PLAY_NOTIFICATION_SOUND' }));
+            clients.forEach(client => client.postMessage({
+                type: 'PLAY_NOTIFICATION_SOUND',
+                notificationType: type   // lets the page play a different sound if needed
+            }));
         })
     );
 });
@@ -58,7 +80,10 @@ self.addEventListener('notificationclick', (event) => {
 self.addEventListener('message', (event) => {
     if (event.data?.type === 'PLAY_NOTIFICATION_SOUND') {
         self.clients.matchAll({ includeUncontrolled: true, type: 'window' }).then(clients => {
-            clients.forEach(c => c.postMessage({ type: 'PLAY_NOTIFICATION_SOUND' }));
+            clients.forEach(c => c.postMessage({
+                type: 'PLAY_NOTIFICATION_SOUND',
+                notificationType: event.data.notificationType
+            }));
         });
     }
 });
