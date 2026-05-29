@@ -255,23 +255,6 @@
     </div>
 </div>
 
-<!-- Scanned Token Action Modal -->
-<div id="action-modal" class="fixed inset-0 bg-slate-900/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xs p-7 text-center">
-        <div class="bg-indigo-50 text-indigo-500 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-            <i class="ph ph-ticket text-3xl"></i>
-        </div>
-        <p class="text-slate-500 text-sm font-semibold mb-1">Scanned Token</p>
-        <p id="action-token-id" class="text-5xl font-black text-slate-800 tracking-tight mb-6"></p>
-        <div class="flex flex-col gap-2.5">
-            <button id="btn-call-scan"   class="w-full bg-blue-500 hover:bg-blue-600 text-white py-3.5 rounded-xl font-bold transition flex items-center justify-center gap-2"><i class="ph ph-bell-ringing"></i> Call Token</button>
-            <button id="btn-serve-scan"  class="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-3.5 rounded-xl font-bold transition flex items-center justify-center gap-2"><i class="ph ph-check-circle"></i> Mark Served</button>
-            <button id="btn-cancel-scan" class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3.5 rounded-xl font-bold transition flex items-center justify-center gap-2"><i class="ph ph-x-circle"></i> Cancel</button>
-            <button onclick="closeActionModal()" class="w-full text-slate-500 hover:bg-slate-50 py-3 rounded-xl font-bold transition text-sm">Dismiss</button>
-        </div>
-    </div>
-</div>
-
 <!-- Timer Expired Modal -->
 <div id="expired-modal" class="fixed inset-0 bg-slate-900/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -319,6 +302,7 @@ let rtChannel    = null;
 
 let notifiedAlmost   = new Set();
 let notifiedCanceled = new Set();
+let notifiedWarning  = new Set(); // Tracks 3-min pushes and auto-cancels triggered by staff
 
 const SHOP_INFO = {
     'kfc': { name: 'KFC', initial: 'K', color: 'red-600', bg: 'bg-red-600' },
@@ -433,19 +417,30 @@ function tickTimerDisplays() {
             }
         }
 
+        // Show Modal to user if they have the app open
         if (myTokenIds.includes(token.id) && inWarning && !warningShownFor.has(token.id)) {
             const tRem = Math.ceil(totalRemain / 1000);
             showWarningModal(token.id, tRem);
-            
-            // PUSH TRIGGER 3: Warning Notification (3 mins passed)
-            if (token.subscription) {
-                const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
-                sendPush(
-                    token.subscription,
-                    `⚠️ ${shopName}: Time is up!`,
-                    `Your 3 minutes have passed. Return to the counter now or your token will be canceled.`,
-                    'warning'
-                );
+        }
+
+        // STAFF DEVICE acts as the background controller for pushes & auto-cancel
+        if (currentRole === 'staff') {
+            if (inWarning && !notifiedWarning.has(token.id)) {
+                notifiedWarning.add(token.id);
+                if (token.subscription) {
+                    const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
+                    sendPush(
+                        token.subscription,
+                        `⚠️ ${shopName}: Time is up!`,
+                        `Your 3 minutes have passed. Return to the counter now or your token will be canceled.`,
+                        'warning'
+                    );
+                }
+            }
+
+            if (totalRemain <= 0 && !notifiedWarning.has(token.id + '_canceled')) {
+                notifiedWarning.add(token.id + '_canceled');
+                updateStatus(token.id, 'canceled');
             }
         }
     });
@@ -524,6 +519,7 @@ async function initShopData() {
     clearAllTimers();
     notifiedAlmost.clear();
     notifiedCanceled.clear();
+    notifiedWarning.clear();
     if (rtChannel) supabase.removeChannel(rtChannel);
 
     const { data, error } = await supabase
@@ -1066,19 +1062,9 @@ function onScan(text) {
         toast(`Token ${text} already ${token.status}`, 'error'); return;
     }
 
-    document.getElementById('action-token-id').textContent = token.id;
-    const modal = document.getElementById('action-modal');
-    modal.classList.remove('hidden'); modal.classList.add('flex');
-
-    document.getElementById('btn-call-scan').onclick   = () => { updateStatus(token.id, 'called');   closeActionModal(); };
-    document.getElementById('btn-serve-scan').onclick  = () => { updateStatus(token.id, 'served');   closeActionModal(); };
-    document.getElementById('btn-cancel-scan').onclick = () => { updateStatus(token.id, 'canceled'); closeActionModal(); };
+    // Instantly mark the token as served upon scan
+    updateStatus(token.id, 'served');
 }
-
-window.closeActionModal = function() {
-    const modal = document.getElementById('action-modal');
-    modal.classList.add('hidden'); modal.classList.remove('flex');
-};
 
 // ── UTILS ─────────────────────────────────────────────────────────────────
 function toast(msg, type = 'info') {
