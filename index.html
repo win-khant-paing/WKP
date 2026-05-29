@@ -436,8 +436,17 @@ function tickTimerDisplays() {
         if (myTokenIds.includes(token.id) && inWarning && !warningShownFor.has(token.id)) {
             const tRem = Math.ceil(totalRemain / 1000);
             showWarningModal(token.id, tRem);
-            // NOTE: Warning push notification (notification 4) is sent by the server
-            // pg_cron job — this block only shows the in-app modal when app is open.
+            
+            // PUSH TRIGGER 3: Warning Notification (3 mins passed)
+            if (token.subscription) {
+                const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
+                sendPush(
+                    token.subscription,
+                    `⚠️ ${shopName}: Time is up!`,
+                    `Your 3 minutes have passed. Return to the counter now or your token will be canceled.`,
+                    'warning'
+                );
+            }
         }
     });
 }
@@ -567,15 +576,25 @@ function subscribeRealtime() {
                 
                 if (i !== -1) tokens[i] = mergedToken; else tokens.push(mergedToken);
 
-                // Start/stop the countdown timer display when called/finished
                 if (mergedToken.status === 'called' && mergedToken.called_at) {
                     startDisplayTimer(mergedToken.id, mergedToken.called_at);
                 }
                 if (mergedToken.status === 'served' || mergedToken.status === 'canceled') {
                     stopDisplayTimer(mergedToken.id);
-                    // Show in-app UI banners when app IS open
                     if (mergedToken.status === 'canceled' && myTokenIds.includes(mergedToken.id)) {
                         onServerAutoCancel(mergedToken.id);
+                        
+                        // PUSH TRIGGER 4: Token Canceled Push
+                        if (mergedToken.subscription && !notifiedCanceled.has(mergedToken.id)) {
+                            notifiedCanceled.add(mergedToken.id);
+                            const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
+                            sendPush(
+                                mergedToken.subscription,
+                                `❌ ${shopName}: Token Canceled`,
+                                `Your token ${mergedToken.id} has been canceled.`,
+                                'canceled'
+                            );
+                        }
                     }
                     if (mergedToken.status === 'served' && expiredTokenId === mergedToken.id) {
                         expiredTokenId = null; closeWarningModal();
@@ -586,27 +605,30 @@ function subscribeRealtime() {
             }
             
             refreshViews();
-            // NOTE: "Almost your turn" push (notification 2) is handled server-side.
-            // checkQueuePositions() here only updates in-app UI — no push sent from client.
-            checkQueuePositions();
+            checkQueuePositions(); // Run evaluation for "1 person ahead"
         })
         .subscribe();
 }
 
-// Updates in-app UI state only — no push from client (server handles push)
+// Check if exactly 1 person is ahead of the current user to trigger the "Almost" Push
 function checkQueuePositions() {
     if (currentRole !== 'customer') return;
     const pending = tokens.filter(t => t.status === 'pending').sort((a,b) => a.timestamp - b.timestamp);
+    
     myTokenIds.forEach(tokenId => {
         const pos = pending.findIndex(t => t.id === tokenId);
-        // pos === 1 means exactly 1 person ahead — update any in-app UI if needed
+        // pos === 1 means the user is at index 1 (meaning exactly 1 person is ahead of them at index 0)
         if (pos === 1 && !notifiedAlmost.has(tokenId)) {
             notifiedAlmost.add(tokenId);
-            // In-app toast when app is open (push for background is server's job)
-            if (currentRole === 'customer') {
+            const token = tokens.find(t => t.id === tokenId);
+            if (token && token.subscription) {
                 const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
-                toast(`⏳ Almost your turn at ${shopName}! 1 person ahead.`, 'info');
-                playSound('almost_turn');
+                sendPush(
+                    token.subscription,
+                    `⏳ ${shopName}: You're Next!`,
+                    `There is only 1 person ahead of you. Get ready!`,
+                    'queued'
+                );
             }
         }
     });
@@ -749,19 +771,16 @@ async function setupPush(tokenId, position) {
             applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY)
         });
 
-        // Save subscription to DB first so server can use it
         await supabase.from('queue_tokens').update({ subscription: sub.toJSON() }).eq('id', tokenId);
         const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
         
-        // ── NOTIFICATION 1: Token confirmed ──────────────────────────────────
-        // Sent immediately after the user gets their token.
-        // If position === 1 they are called right away → use 'called' type (notification 3 merged)
+        // PUSH TRIGGER 1: Right after taking the token
         if (position === 1) {
             await sendPush(
                 sub.toJSON(),
                 `🔔 ${shopName}: It's Your Turn!`,
                 `Token ${tokenId} — please come to the counter within 3 minutes!`,
-                'called'
+                'immediate_call'
             );
         } else {
             const ahead = position - 1;
@@ -770,7 +789,7 @@ async function setupPush(tokenId, position) {
                 sub.toJSON(),
                 `✅ ${shopName}: Token Confirmed`,
                 `You got token ${tokenId}. There ${peopleStr} ahead of you.`,
-                'token_confirmed'
+                'queued'
             );
         }
     } catch(e) { console.warn('Push subscribe failed:', e); }
@@ -795,9 +814,6 @@ function urlB64ToUint8Array(b64) {
 }
 
 // ── STATUS UPDATES ────────────────────────────────────────────────────────
-// NOTE: All push notifications (2=almost, 3=called, 4=warning, 5=canceled)
-// are now fired by the server-side Edge Function (send-push/index.ts).
-// The client only updates the DB; the server reacts to changes.
 window.updateStatus = async function(tokenId, newStatus) {
     const i = tokens.findIndex(t => t.id === tokenId);
     const calledAt = newStatus === 'called' ? Date.now() : undefined;
@@ -816,7 +832,20 @@ window.updateStatus = async function(tokenId, newStatus) {
     const labels = { called: 'Called', served: 'Served', canceled: 'Canceled' };
     toast(`Token ${tokenId} → ${labels[newStatus] || newStatus}`, newStatus === 'canceled' ? 'info' : 'success');
 
-    if (newStatus === 'called') startDisplayTimer(tokenId, calledAt);
+    if (newStatus === 'called') {
+        const token = tokens.find(t => t.id === tokenId);
+        if (token?.subscription) {
+            const shopName = SHOP_INFO[selectedShop]?.name || 'the shop';
+            await sendPush(
+                token.subscription,
+                `🔔 ${shopName}: It's Your Turn!`,
+                `Token ${tokenId} — please come to the counter within 3 minutes!`,
+                'called'
+            );
+        }
+        startDisplayTimer(tokenId, calledAt);
+    }
+
     if (newStatus === 'served' || newStatus === 'canceled') stopDisplayTimer(tokenId);
 
     if (newStatus === 'served' && currentRole === 'customer') {
@@ -1065,11 +1094,9 @@ function toast(msg, type = 'info') {
 function playSound(notifType) {
     try {
         const ctx  = new (window.AudioContext || window.webkitAudioContext)();
-        const isYourTurn   = notifType === 'called';
-        const isWarning    = notifType === 'warning';
-        const isCanceled   = notifType === 'canceled';
-        const isAlmost     = notifType === 'almost_turn';
-        const isConfirmed  = notifType === 'token_confirmed';
+        const isYourTurn = notifType === 'called' || notifType === 'immediate_call';
+        const isWarning  = notifType === 'warning';
+        const isCanceled = notifType === 'canceled';
 
         function beep(freq, startTime, duration) {
             const osc  = ctx.createOscillator();
@@ -1081,20 +1108,17 @@ function playSound(notifType) {
         }
 
         if (isYourTurn) {
-            // Urgent rising double beep — it's YOUR turn!
-            beep(880, ctx.currentTime, 0.35); beep(1100, ctx.currentTime + 0.42, 0.45);
+            // Urgent high double beep
+            beep(880, ctx.currentTime, 0.35); beep(1100, ctx.currentTime + 0.42, 0.45); 
         } else if (isWarning) {
-            // Rapid warning triple beep — time almost up!
-            beep(400, ctx.currentTime, 0.35); beep(400, ctx.currentTime + 0.45, 0.35); beep(400, ctx.currentTime + 0.9, 0.4);
+            // Warning repetitive beep
+            beep(400, ctx.currentTime, 0.4); beep(400, ctx.currentTime + 0.5, 0.4);
         } else if (isCanceled) {
-            // Low descending tone — token gone
-            beep(300, ctx.currentTime, 0.3); beep(200, ctx.currentTime + 0.35, 0.5);
-        } else if (isAlmost) {
-            // Two-note rising alert — get ready!
-            beep(660, ctx.currentTime, 0.3); beep(880, ctx.currentTime + 0.35, 0.4);
+            // Low error thud
+            beep(250, ctx.currentTime, 0.6);
         } else {
-            // Soft single confirmation ping — token confirmed
-            beep(660, ctx.currentTime, 0.5);
+            // Soft single ping (queued/almost ready)
+            beep(660, ctx.currentTime, 0.5); 
         }
     } catch(e) {}
 }
